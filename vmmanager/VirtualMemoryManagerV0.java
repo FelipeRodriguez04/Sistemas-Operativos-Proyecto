@@ -8,7 +8,6 @@ public class VirtualMemoryManagerV0 {
 
     MainMemory memory;
 
-    // log2(): Convenient function to compute the log2 of an integer;
     private int log2(int x) {
         return (int) (Math.log(x) / Math.log(2));
     }
@@ -18,7 +17,6 @@ public class VirtualMemoryManagerV0 {
         this.memory=memory;
     }
 
-    // Method to write a byte to memory given a physical address
     public void writeByte(Integer fourByteBinaryString, Byte value) throws MemoryException {
         int memSize=memory.size();
         int addrBits=log2(memSize);
