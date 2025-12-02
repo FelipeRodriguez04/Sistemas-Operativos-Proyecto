@@ -6,78 +6,223 @@ import vmsimulation.MainMemory;
 import vmsimulation.MemoryException;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 
 public class VirtualMemoryManagerV3 {
 
-    MainMemory memory;    // The main memory
-    BackingStore disk;    // The disk
-    Integer pageSize;    // Page size
+    MainMemory memory;
+    BackingStore disk;
+    Integer pageSize;
+
+    private static class PageTableEntry {
+        boolean valid;
+        boolean dirty; 
+        int frameNumber;
+    }
+
+    PageTableEntry[] pageTable;
+    int numFrames;
+    int numPages;
+
+    ArrayList<Integer> freeFrames=new ArrayList<>();
+    ArrayList<Integer> fifoQueue=new ArrayList<>();
+
+    int pageFaultCount=0;
+    int bytesTransferred=0;
 
     private int log2(int x) {
         return (int) (Math.log(x) / Math.log(2));
     }
 
-    // Constructor
-    public VirtualMemoryManagerV3(MainMemory memory,
-                                  BackingStore disk,
-                                  Integer pageSize) throws MemoryException {
-        this.memory = memory;
-        this.disk = disk;
-        this.pageSize = pageSize;
+    public VirtualMemoryManagerV3(MainMemory memory, BackingStore disk, Integer pageSize) throws MemoryException {
+        this.memory=memory;
+        this.disk=disk;
+        this.pageSize=pageSize;
 
-        // TO AUGMENT, MOST LIKELY
+        this.numFrames=memory.size() / pageSize;
+        this.numPages=disk.size() / pageSize;
+
+        pageTable=new PageTableEntry[numPages];
+        for (int i=0; i<numPages; i++) {
+            pageTable[i]=new PageTableEntry();
+            pageTable[i].valid=false;
+            pageTable[i].dirty=false; 
+            pageTable[i].frameNumber=-1;
+        }
+
+        for (int f=0; f<numFrames; f++) {
+            freeFrames.add(f);
+        }
     }
 
-    // Method to write a byte to memory given a virtual address
+
+    private int extractVirtualAddress(Integer fourByteBinaryString) {
+        int virtualAddressBits=log2(numPages * pageSize);
+        return BitwiseToolbox.extractBits(fourByteBinaryString, 0, virtualAddressBits);
+    }
+
+    private int offsetBits() {
+        return log2(pageSize);
+    }
+
+    private int getPageNumber(int virtualAddress) {
+        int offBits=offsetBits();
+        return virtualAddress>>offBits;
+    }
+
+    private int getOffset(int virtualAddress) {
+        int offBits=offsetBits();
+        int mask=(1 << offBits) - 1;
+        return virtualAddress & mask;
+    }
+
+    private String formatPhysicalAddress(int physicalAddress) {
+        int bits=log2(memory.size());
+        String s=Integer.toBinaryString(physicalAddress);
+        while (s.length()<bits) {
+            s = "0" + s;
+        }
+        return s;
+    }
+
+
+    private void readPageFromDisk(int pageNumber, int frame) throws MemoryException {
+        int ramBase=frame * pageSize;
+        byte[] pageData=disk.readPage(pageNumber); 
+        for (int i=0; i<pageSize; i++) {
+            byte val=pageData[i];
+            memory.writeByte(ramBase + i, val);
+            bytesTransferred++;
+        }
+    }
+
+    private void writePageToDisk(int pageNumber, int frame) throws MemoryException {
+        int ramBase=frame * pageSize;
+        byte[] pageData=new byte[pageSize];
+        for (int i=0; i<pageSize; i++) {
+            byte val=memory.readByte(ramBase + i);
+            pageData[i]=val;
+            bytesTransferred++;
+        }
+        disk.writePage(pageNumber, pageData);
+    }
+
+    private int handlePageFault(int pageNumber) throws MemoryException {
+        pageFaultCount++;
+        int frame;
+
+        if (!freeFrames.isEmpty()) {
+            frame = freeFrames.remove(0);
+        } 
+        else {
+            int victimPage=fifoQueue.remove(0);
+            PageTableEntry victimEntry=pageTable[victimPage];
+            if (victimEntry.dirty) {
+                System.out.println("Evicting page " + victimPage);
+                writePageToDisk(victimPage, victimEntry.frameNumber);
+            } 
+            else {
+                System.out.println("Evicting page " + victimPage + " (NOT DIRTY)");
+            }
+            victimEntry.valid=false;
+            victimEntry.dirty=false; 
+            frame=victimEntry.frameNumber;
+        }
+
+        readPageFromDisk(pageNumber, frame);
+        PageTableEntry newEntry=pageTable[pageNumber];
+        newEntry.valid=true;
+        newEntry.dirty=false; 
+        newEntry.frameNumber=frame;
+        fifoQueue.add(pageNumber);
+        System.out.println("Bringing page " + pageNumber + " into frame " + frame);
+        return frame;
+    }
+
     public void writeByte(Integer fourByteBinaryString, Byte value) throws MemoryException {
+        int virtualAddress=extractVirtualAddress(fourByteBinaryString);
+        int page=getPageNumber(virtualAddress);
+        int offset=getOffset(virtualAddress);
+        int frame;
+        if (!pageTable[page].valid) {
+            frame=handlePageFault(page);
+        } 
+        else {
+            System.out.println("Page " + page + " is in memory");
+            frame=pageTable[page].frameNumber;
+        }
+        int physicalAddress=frame * pageSize + offset;
+        memory.writeByte(physicalAddress, value);
+        pageTable[page].dirty=true;
 
+        System.out.println("RAM: @" + formatPhysicalAddress(physicalAddress) + " <-- " + value);
     }
 
-
-    // Method to read a byte to memory given a virtual address
     public Byte readByte(Integer fourByteBinaryString) throws MemoryException {
-        int algunNumeroApropiado = 0;
-        byte valInAddr = memory.readByte(algunNumeroApropiado);
+        int virtualAddress=extractVirtualAddress(fourByteBinaryString);
+        int page=getPageNumber(virtualAddress);
+        int offset=getOffset(virtualAddress);
+        int frame;
+        if (!pageTable[page].valid) {
+            frame=handlePageFault(page);
+        } else {
+            System.out.println("Page " + page + " is in memory");
+            frame=pageTable[page].frameNumber;
+        }
+        int physicalAddress=frame * pageSize + offset;
+        byte value=memory.readByte(physicalAddress);
 
-        return valInAddr; // MUST RETURN THE VALUE THAT WAS READ INSTEAD OF JUST ZERO
+        System.out.println("RAM: @" + formatPhysicalAddress(physicalAddress) + " --> " + value);
+        return value;
     }
 
 
-    // Method to print all memory content
     public void printMemoryContent() throws MemoryException {
-
+        int memSize=memory.size();
+        int bits=log2(memSize);
+        for (int addr=0; addr < memSize; addr++) {
+            String s=Integer.toBinaryString(addr);
+            while (s.length() < bits) {
+                s = "0" + s;
+            }
+            byte val=memory.readByte(addr);
+            System.out.println(s + ": " + val);
+        }
     }
 
-    // Method to print all disk content
     public void printDiskContent() throws MemoryException {
+        int diskSize=disk.size();
+        int numPagesLocal=diskSize / pageSize;
 
+        for (int p=0; p < numPagesLocal; p++) {
+            StringBuilder sb=new StringBuilder();
+            sb.append("PAGE ").append(p).append(": ");
+            byte[] pageData=disk.readPage(p);
+            for (int i=0; i < pageSize; i++) {
+                byte val=pageData[i];
+                sb.append(val);
+                if (i < pageSize - 1) {
+                    sb.append(",");
+                }
+            }
+            System.out.println(sb.toString());
+        }
     }
 
-    // Method to write back all pages to disk
     public void writeBackAllPagesToDisk() throws MemoryException {
-
-
+        for (int page=0; page < numPages; page++) {
+            PageTableEntry e=pageTable[page];
+            if (e.valid && e.dirty) {
+                writePageToDisk(page, e.frameNumber);
+                e.dirty=false; 
+            }
+        }
     }
 
-    // Method to retrieve the page fault count
     public int getPageFaultCount() {
-        // TO IMPLEMENT
-        return 0; // MUST RETURN THE NUMBER OF PAGE FAULTS INSTEAD OF JUST ZERO
+        return pageFaultCount;
     }
 
-    // Method to retrieve the number of bytes transfered between RAM and disk
     public int getTransferedByteCount() {
-        return 0; // MUST RETURN THE NUMBER OF BYTES TRANSFERRED INSTEAD OF JUST ZERO
-    }
-
-    public void ramToDiskTransferAccumulatedBytes() {
-
-    }
-
-    public void increaseFaultNum() {
-
+        return bytesTransferred;
     }
 }
-
-
