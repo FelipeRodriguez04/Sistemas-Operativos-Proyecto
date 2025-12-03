@@ -12,7 +12,6 @@ public class VirtualMemoryManagerV0 {
         return (int) (Math.log(x) / Math.log(2));
     }
 
-    // Constructor
     public VirtualMemoryManagerV0(MainMemory memory) throws MemoryException {
         this.memory=memory;
     }
